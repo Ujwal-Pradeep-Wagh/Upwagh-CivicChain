@@ -1,0 +1,19 @@
+{
+  "name": "civicchain-blockchain",
+  "version": "1.0.0",
+  "description": "CivicChain Smart Contracts - Truffle project",
+  "main": "truffle-config.js",
+  "scripts": {
+    "compile": "truffle compile",
+    "migrate": "truffle migrate --reset",
+    "test": "truffle test"
+  },
+  "dependencies": {
+    "truffle": "^5.11.0",
+    "@truffle/hdwallet-provider": "^2.1.0"
+  },
+  "devDependencies": {
+    "@truffle/contract": "^4.6.0",
+    "@truffle/core": "^5.11.0"
+  }
+}
