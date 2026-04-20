@@ -75,8 +75,17 @@ export default function OfficerPage() {
 
   // ── LOAD GRIEVANCES ────────────────────────
 
+  // Auto-load on mount using the officer's registered wallet (no MetaMask needed)
+  useEffect(() => {
+    const addr = user()?.walletAddress;
+    if (addr) loadGrievances(addr);
+  }, []);
+
   async function loadGrievances(addr) {
-    if (!addr) { alert("Please connect MetaMask first."); return; }
+    if (!addr) {
+      setGrievances([]);
+      return;
+    }
     setLoading(true);
 
     try {
@@ -86,7 +95,7 @@ export default function OfficerPage() {
       const data = await res.json();
       setGrievances(data.grievances || []);
     } catch (err) {
-      alert("Failed to load grievances.");
+      console.error("Failed to load grievances:", err.message);
     }
 
     setLoading(false);
@@ -97,26 +106,13 @@ export default function OfficerPage() {
   async function handleUpdate(e) {
     e.preventDefault();
     setUpdateMsg("");
-
-    if (!walletAccount) {
-      setUpdateMsg("❌ Please connect MetaMask first.");
-      return;
-    }
-
     setUpdating(true);
 
     try {
       /**
-       * We call the backend route which calls the smart contract.
-       * The backend uses the officerWallet address as the `from` field.
-       * Since Ganache unlocks all test accounts, this works automatically.
-       *
-       * In a real app, you would use MetaMask to sign this transaction
-       * directly from the browser using:
-       *   contract.methods.updateStatus(...).send({ from: walletAccount })
-       * That triggers the MetaMask popup for signing.
-       *
-       * We do it via backend here for simplicity, but pass the wallet address.
+       * The backend fetches the officer's wallet address from MongoDB using the
+       * JWT token — no need to pass officerWallet from the frontend.
+       * MetaMask is NOT required for status updates.
        */
       const res  = await fetch(`${API}/grievances/update/${updateForm.id}`, {
         method : "PUT",
@@ -125,9 +121,8 @@ export default function OfficerPage() {
           Authorization : `Bearer ${token()}`,
         },
         body: JSON.stringify({
-          newStatus    : updateForm.status,
-          remarks      : updateForm.remarks,
-          officerWallet: walletAccount,
+          newStatus: updateForm.status,
+          remarks  : updateForm.remarks,
         }),
       });
       const data = await res.json();
@@ -136,8 +131,8 @@ export default function OfficerPage() {
         setUpdateMsg("❌ " + data.message);
       } else {
         setUpdateMsg("✅ Status updated! Tx: " + data.transactionHash);
-        // Refresh the list
-        loadGrievances(walletAccount);
+        // Refresh using stored wallet or user profile wallet
+        loadGrievances(walletAccount || user()?.walletAddress || "");
         setUpdateForm({ id: null, status: "InProgress", remarks: "" });
       }
     } catch (err) {
@@ -182,13 +177,12 @@ export default function OfficerPage() {
           </div>
         </div>
 
-        {/* Instruction banner */}
+        {/* Info banner — shown when MetaMask not connected */}
         {!walletAccount && (
-          <div style={{ ...cardStyle, backgroundColor: "#fef9e7", border: "1px solid #f9ca24" }}>
-            <strong>⚠️ Connect MetaMask to proceed.</strong>
+          <div style={{ ...cardStyle, backgroundColor: "#eaf4fb", border: "1px solid #aed6f1" }}>
+            <strong>ℹ️ Your grievances load automatically from your registered wallet.</strong>
             <p style={{ margin: "4px 0 0", fontSize: "14px", color: "#555" }}>
-              As an officer, you must sign blockchain transactions with MetaMask.
-              Click "Connect MetaMask" above to load your assigned grievances.
+              MetaMask is optional — connect it above only if you want to browse by a different wallet address.
             </p>
           </div>
         )}

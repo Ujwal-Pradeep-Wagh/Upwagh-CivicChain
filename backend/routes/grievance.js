@@ -210,11 +210,11 @@ router.put("/update/:id", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "Access denied. Officers only." });
     }
 
-    const { id }                              = req.params;
-    const { newStatus, remarks, officerWallet } = req.body;
+    const { id }                  = req.params;
+    const { newStatus, remarks }  = req.body;
 
-    if (!newStatus || !remarks || !officerWallet) {
-      return res.status(400).json({ message: "newStatus, remarks, and officerWallet are required." });
+    if (!newStatus || !remarks) {
+      return res.status(400).json({ message: "newStatus and remarks are required." });
     }
 
     /**
@@ -229,63 +229,60 @@ router.put("/update/:id", verifyToken, async (req, res) => {
     }
 
     /**
-     * WHY WE SIGN MANUALLY:
-     * The contract requires msg.sender === assignedOfficer.
-     * Using .send({ from: address }) only works if that address is already
-     * unlocked inside Ganache — which only applies to the 10 built-in accounts.
-     * If the officer registered with any other address, Ganache says
-     * "sender account not recognized".
+     * SECURE APPROACH: Fetch the officer's wallet address from MongoDB
+     * using their JWT user ID — do NOT trust walletAddress from the request body.
      *
-     * FIX: We look up the officer's private key from the GANACHE_PRIVATE_KEYS
-     * map, sign the transaction ourselves with web3.eth.accounts.signTransaction,
-     * then broadcast the raw signed transaction via web3.eth.sendSignedTransaction.
-     * This satisfies the contract's msg.sender check without needing Ganache to
-     * have the account unlocked.
+     * This also fixes the "sender account not recognized" error: the
+     * MetaMask-connected account on the frontend may differ from the wallet
+     * the officer registered with. By using the DB wallet we always have the
+     * correct address, and we can look up its Ganache private key to sign.
      */
+    const User = require("../models/User");
+    const officer = await User.findById(req.user.id).select("walletAddress");
 
-    // Normalise to checksummed address for map lookup
-    const normalised = web3.utils.toChecksumAddress(officerWallet);
+    if (!officer || !officer.walletAddress) {
+      return res.status(400).json({ message: "Officer profile has no wallet address. Please update your profile." });
+    }
 
-    // Load the private key map from .env
-    const keyMap = JSON.parse(process.env.GANACHE_PRIVATE_KEYS || "{}");
+    // Normalise to checksummed address (DB stores lowercase, key map uses checksummed)
+    const officerWallet = web3.utils.toChecksumAddress(officer.walletAddress);
 
-    // Try both checksummed and original casing
-    const privateKey = keyMap[normalised] || keyMap[officerWallet];
+    // Load the Ganache private key map from .env
+    const keyMap     = JSON.parse(process.env.GANACHE_PRIVATE_KEYS || "{}");
+    const privateKey = keyMap[officerWallet] || keyMap[officer.walletAddress];
 
     if (!privateKey) {
       return res.status(400).json({
         message:
-          "Officer wallet is not a recognised Ganache test account. " +
-          "Please register with one of the 10 Ganache addresses shown when Ganache starts.",
+          `Officer wallet (${officerWallet}) is not a recognised Ganache test account. ` +
+          "Please update your profile wallet address to one of the 10 Ganache addresses shown at startup.",
       });
     }
 
-    // Build the transaction data (encoded contract call)
+    // Encode the contract call
     const txData = grievanceContract.methods
       .updateStatus(id, statusCode, remarks)
       .encodeABI();
 
-    // Estimate gas so we don't over-pay
+    // Estimate gas
     const gasEstimate = await grievanceContract.methods
       .updateStatus(id, statusCode, remarks)
-      .estimateGas({ from: normalised });
+      .estimateGas({ from: officerWallet });
 
-    const nonce    = await web3.eth.getTransactionCount(normalised, "pending");
+    const nonce    = await web3.eth.getTransactionCount(officerWallet, "pending");
     const gasPrice = await web3.eth.getGasPrice();
 
-    // Build the raw tx object
+    // Build raw transaction
     const rawTx = {
       nonce   : web3.utils.toHex(nonce),
       gasPrice: web3.utils.toHex(gasPrice),
-      gas     : web3.utils.toHex(Math.ceil(gasEstimate * 1.3)), // 30 % buffer
+      gas     : web3.utils.toHex(Math.ceil(gasEstimate * 1.3)),
       to      : grievanceContract.options.address,
       data    : txData,
     };
 
     // Sign with the officer's private key
-    const signed = await web3.eth.accounts.signTransaction(rawTx, privateKey);
-
-    // Broadcast the signed transaction
+    const signed  = await web3.eth.accounts.signTransaction(rawTx, privateKey);
     const receipt = await web3.eth.sendSignedTransaction(signed.rawTransaction);
 
     res.json({

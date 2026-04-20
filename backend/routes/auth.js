@@ -180,5 +180,39 @@ router.get("/officers", verifyToken, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// ROUTE: PUT /api/auth/update-wallet  (Protected)
+// Lets an officer update their wallet address
+// ─────────────────────────────────────────────
+
+router.put("/update-wallet", verifyToken, async (req, res) => {
+  try {
+    const { walletAddress } = req.body;
+    if (!walletAddress) {
+      return res.status(400).json({ message: "walletAddress is required." });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { walletAddress: walletAddress.toLowerCase() },
+      { new: true }
+    ).select("-password");
+
+    res.json({
+      message: "Wallet address updated successfully!",
+      user: {
+        id           : user._id,
+        name         : user.name,
+        email        : user.email,
+        role         : user.role,
+        walletAddress: user.walletAddress,
+      },
+    });
+  } catch (err) {
+    console.error("Update wallet error:", err.message);
+    res.status(500).json({ message: "Server error." });
+  }
+});
+
 module.exports = router;
 module.exports.verifyToken = verifyToken;
