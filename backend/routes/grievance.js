@@ -20,10 +20,14 @@
  *   Here we support BOTH: frontend can pass a signed tx, or backend uses Ganache accounts.
  */
 
-const express              = require("express");
-const { web3, grievanceContract } = require("../config/web3");
-const { verifyToken }      = require("./auth");
+const express         = require("express");
+const { verifyToken } = require("./auth");
 
+/**
+ * Factory function — receives web3 + grievanceContract injected from server.js.
+ * This ensures we always use the address matched to the live Ganache network.
+ */
+module.exports = function grievanceRouter({ web3, grievanceContract }) {
 const router = express.Router();
 
 // ─────────────────────────────────────────────
@@ -206,7 +210,7 @@ router.put("/update/:id", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "Access denied. Officers only." });
     }
 
-    const { id }                    = req.params;
+    const { id }                              = req.params;
     const { newStatus, remarks, officerWallet } = req.body;
 
     if (!newStatus || !remarks || !officerWallet) {
@@ -214,12 +218,10 @@ router.put("/update/:id", verifyToken, async (req, res) => {
     }
 
     /**
-     * Map status string to the Solidity enum number:
-     *  Pending    = 0
-     *  InProgress = 1
-     *  Resolved   = 2
+     * Map status string → Solidity enum number:
+     *   Pending = 0, InProgress = 1, Resolved = 2
      */
-    const statusMap = { Pending: 0, InProgress: 1, Resolved: 2 };
+    const statusMap  = { Pending: 0, InProgress: 1, Resolved: 2 };
     const statusCode = statusMap[newStatus];
 
     if (statusCode === undefined) {
@@ -227,17 +229,64 @@ router.put("/update/:id", verifyToken, async (req, res) => {
     }
 
     /**
+     * WHY WE SIGN MANUALLY:
      * The contract requires msg.sender === assignedOfficer.
-     * We send the transaction FROM the officer's own wallet address.
+     * Using .send({ from: address }) only works if that address is already
+     * unlocked inside Ganache — which only applies to the 10 built-in accounts.
+     * If the officer registered with any other address, Ganache says
+     * "sender account not recognized".
      *
-     * For this to work on the backend, the officer's Ganache account
-     * must be unlocked (Ganache does this automatically for all 10 test accounts).
-     *
-     * The officerWallet is sent from the frontend after MetaMask connects.
+     * FIX: We look up the officer's private key from the GANACHE_PRIVATE_KEYS
+     * map, sign the transaction ourselves with web3.eth.accounts.signTransaction,
+     * then broadcast the raw signed transaction via web3.eth.sendSignedTransaction.
+     * This satisfies the contract's msg.sender check without needing Ganache to
+     * have the account unlocked.
      */
-    const receipt = await grievanceContract.methods
+
+    // Normalise to checksummed address for map lookup
+    const normalised = web3.utils.toChecksumAddress(officerWallet);
+
+    // Load the private key map from .env
+    const keyMap = JSON.parse(process.env.GANACHE_PRIVATE_KEYS || "{}");
+
+    // Try both checksummed and original casing
+    const privateKey = keyMap[normalised] || keyMap[officerWallet];
+
+    if (!privateKey) {
+      return res.status(400).json({
+        message:
+          "Officer wallet is not a recognised Ganache test account. " +
+          "Please register with one of the 10 Ganache addresses shown when Ganache starts.",
+      });
+    }
+
+    // Build the transaction data (encoded contract call)
+    const txData = grievanceContract.methods
       .updateStatus(id, statusCode, remarks)
-      .send({ from: officerWallet, gas: 3000000 });
+      .encodeABI();
+
+    // Estimate gas so we don't over-pay
+    const gasEstimate = await grievanceContract.methods
+      .updateStatus(id, statusCode, remarks)
+      .estimateGas({ from: normalised });
+
+    const nonce    = await web3.eth.getTransactionCount(normalised, "pending");
+    const gasPrice = await web3.eth.getGasPrice();
+
+    // Build the raw tx object
+    const rawTx = {
+      nonce   : web3.utils.toHex(nonce),
+      gasPrice: web3.utils.toHex(gasPrice),
+      gas     : web3.utils.toHex(Math.ceil(gasEstimate * 1.3)), // 30 % buffer
+      to      : grievanceContract.options.address,
+      data    : txData,
+    };
+
+    // Sign with the officer's private key
+    const signed = await web3.eth.accounts.signTransaction(rawTx, privateKey);
+
+    // Broadcast the signed transaction
+    const receipt = await web3.eth.sendSignedTransaction(signed.rawTransaction);
 
     res.json({
       message        : "Grievance status updated on blockchain!",
@@ -265,4 +314,5 @@ function mapStatus(statusCode) {
   return map[statusCode] || "Unknown";
 }
 
-module.exports = router;
+return router;
+}; // end grievanceRouter factory
